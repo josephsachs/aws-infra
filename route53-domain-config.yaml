@@ -1,0 +1,56 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'DNS Configuration for Authentication Service'
+
+Parameters:
+  DomainName:
+    Type: String
+    Description: Root domain name (e.g., jsachs.studio)
+    Default: jsachs.studio
+  
+  SubdomainName:
+    Type: String
+    Description: Subdomain for the authentication service (e.g., auth)
+    Default: auth
+  
+  ReactCloudFrontDistributionId:
+    Type: String
+    Description: CloudFront distribution ID for React app
+    
+  NextServerPublicDns:
+    Type: String
+    Description: Public DNS of EC2 instance running Next.js
+    
+  HostedZoneId:
+    Type: String
+    Description: Existing Route 53 hosted zone ID for the domain (e.g., Z1234567890ABCDEFGHIJ)
+
+Resources:
+  SubdomainRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub ${SubdomainName}.${DomainName}.
+      Type: A
+      AliasTarget:
+        DNSName: !Sub ${ReactCloudFrontDistributionId}.cloudfront.net
+        HostedZoneId: Z2FDTNDATAQYW2 # CloudFront's hosted zone ID (constant)
+        EvaluateTargetHealth: false
+        
+  ApiRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub api.${SubdomainName}.${DomainName}.
+      Type: A
+      TTL: 300
+      ResourceRecords:
+        - !Ref NextServerPublicDns
+
+Outputs:
+  SubdomainUrl:
+    Description: URL for the React application
+    Value: !Sub https://${SubdomainName}.${DomainName}
+    
+  ApiUrl:
+    Description: URL for the Next.js API
+    Value: !Sub http://api.${SubdomainName}.${DomainName}:3001
