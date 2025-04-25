@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudFormation template for Central Authentication IAM resources'
+Description: 'Authstore IAM resources'
 
 Parameters:
   Environment:

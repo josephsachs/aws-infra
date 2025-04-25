@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'Central Authentication Service - Cognito Infrastructure'
+Description: 'Authentication Storage'
 
 Parameters:
   Environment:
@@ -34,14 +34,14 @@ Parameters:
   ProdBaseUrl:
     Type: String
     Description: Base URL for production environment
-    Default: ""
+    Default: "https://auth.jsachs.studio"
 
 Resources:
   # Core Cognito resources
   CognitoStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://login-service-cf.s3.amazonaws.com/authstore-cognito.yaml
+      TemplateURL: https://cf-source-j8xopz.s3.amazonaws.com/authstore-cognito.yaml
       Parameters:
         Environment: !Ref Environment
         UserPoolName: !Sub "${ServiceName}-UserPool"

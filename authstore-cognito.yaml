@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 'CloudFormation template for Central Authentication Cognito resources'
+Description: 'Authstore Cognito resources'
 
 Parameters:
   Environment:
@@ -34,12 +34,12 @@ Parameters:
   CallbackUrls:
     Type: String
     Description: List of allowed callback URLs
-    Default: "http://localhost:3000/callback"
+    Default: "http://localhost:3000/callback,https://auth.jsachs.studio:3000/callback"
 
   LogoutUrls:
     Type: String
     Description: List of allowed logout URLs
-    Default: "http://localhost:3000"
+    Default: "http://localhost:3000,https://auth.jsachs.studio:3000/callback"
 
   ServiceName:
     Type: String
