@@ -123,14 +123,12 @@ Resources:
         - openid
         - profile
         - aws.cognito.signin.user.admin
-      # Use proper list format by splitting the string parameter
       CallbackURLs: !Split [",", !Ref CallbackUrls]
       LogoutURLs: !Split [",", !Ref LogoutUrls]
       SupportedIdentityProviders:
         - COGNITO
       PreventUserExistenceErrors: ENABLED
 
-  # Secret to store the Cognito Client Secret
   UserPoolSecretHash:
     Type: AWS::SecretsManager::Secret
     Properties:

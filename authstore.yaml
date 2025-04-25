@@ -41,7 +41,7 @@ Resources:
   CognitoStack:
     Type: AWS::CloudFormation::Stack
     Properties:
-      TemplateURL: https://login-service-cf.s3.amazonaws.com/cognito.yaml
+      TemplateURL: https://login-service-cf.s3.amazonaws.com/authstore-cognito.yaml
       Parameters:
         Environment: !Ref Environment
         UserPoolName: !Sub "${ServiceName}-UserPool"
