@@ -11,26 +11,31 @@ Parameters:
   ReactBucketName:
     Type: String
     Description: Name of S3 bucket to host React application
+    Default: "authservice-app-bucket"
     
   NextArtifactBucketName:
     Type: String
     Description: Name of S3 bucket for Next.js artifacts
+    Default: "authservice-artifact-bucket"
     
   CognitoUserPoolId:
     Type: String
     Description: ID of the Cognito User Pool (from foundation stack)
+    Default: "us-east-2_fB2oxrw4l"
     
   CognitoClientId:
     Type: String
     Description: ID of the Cognito App Client (from foundation stack)
+    Default: "79t8bca8dsdm0l06c6vbsm404n"
     
   CognitoClientSecretName:
     Type: String
     Description: Name of the Secret in Secrets Manager containing the Cognito client secret
+    Default: "AuthService/prod/UserPoolClientSecret"
   
   DomainName:
     Type: String
-    Default: auth.jsachs.studio
+    Default: "auth.jsachs.studio"
     Description: Domain name for the authentication service
     
   ApiUrl:
@@ -58,6 +63,62 @@ Mappings:
       CorsOrigins: "https://auth.jsachs.studio"
 
 Resources:
+  AuthServiceVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-VPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AuthServiceVPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-PublicSubnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-IGW
+
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref AuthServiceVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref AuthServiceVPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-RT
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VPCGatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref RouteTable
+
   ReactAppBucket:
     Type: AWS::S3::Bucket
     Properties:
@@ -99,7 +160,7 @@ Resources:
         DefaultRootObject: index.html
         PriceClass: PriceClass_100
         ViewerCertificate:
-          CloudFrontDefaultCertificate: true  # Use default cert for now
+          CloudFrontDefaultCertificate: true
         Origins:
           - Id: S3Origin
             DomainName: !GetAtt ReactAppBucket.DomainName
@@ -125,12 +186,12 @@ Resources:
             ResponseCode: 200
             ResponsePagePath: /index.html
     
-  NextArtifactBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Sub ${NextArtifactBucketName}-${Environment}
-      VersioningConfiguration:
-        Status: Enabled
+  #NextArtifactBucket:
+  #  Type: AWS::S3::Bucket
+  #  Properties:
+  #    BucketName: !Sub ${NextArtifactBucketName}-${Environment}
+  #    VersioningConfiguration:
+  #      Status: Enabled
   
   NextServerRole:
     Type: AWS::IAM::Role
@@ -158,8 +219,8 @@ Resources:
               - 's3:GetObject'
               - 's3:ListBucket'
             Resource:
-              - !Sub arn:aws:s3:::${NextArtifactBucketName}-${Environment}
-              - !Sub arn:aws:s3:::${NextArtifactBucketName}-${Environment}/*
+              - !Sub arn:aws:s3:::${NextArtifactBucketName}   ##-${Environment}
+              - !Sub arn:aws:s3:::${NextArtifactBucketName}/* ##-${Environment}/*
           
           - Effect: Allow
             Action:
@@ -187,6 +248,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for Next.js authentication server
+      VpcId: !Ref AuthServiceVPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 3001
@@ -201,6 +263,7 @@ Resources:
     Properties:
       InstanceType: !Ref InstanceType
       ImageId: !Ref LatestAmazonLinuxAmi
+      SubnetId: !Ref PublicSubnet
       IamInstanceProfile: !Ref NextServerInstanceProfile
       SecurityGroupIds:
         - !Ref NextServerSecurityGroup
@@ -210,80 +273,73 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
       UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          
-          # Update and install dependencies
-          yum update -y
-          yum install -y nodejs npm git
-          npm install -g yarn next
-          
-          # Download Next.js application from artifact bucket
-          aws s3 cp s3://${NextArtifactBucketName}-${Environment}/next-app.zip /tmp/
-          unzip /tmp/next-app.zip -d /opt/auth-service/
-          chmod -R 755 /opt/auth-service/
-          
-          # Ensure data directory exists with proper permissions
-          mkdir -p /opt/auth-service/server/data
-          
-          # Ensure only instance role can access SQLite files
-          touch /opt/auth-service/server/data/sessions.db
-          chmod 700 /opt/auth-service/server/data
-          chmod 600 /opt/auth-service/server/data/sessions.db
-          
-          # Create .env file with environment variables
-          cat > /opt/auth-service/.env << 'EOL'
-          ENVIRONMENT=${Environment}
-          AWS_REGION=${AWS::Region}
-          COGNITO_USER_POOL_ID=${CognitoUserPoolId}
-          COGNITO_CLIENT_ID=${CognitoClientId}
-          COGNITO_CLIENT_SECRET_NAME=${CognitoClientSecretName}
-          ALLOWED_ORIGINS=${EnvironmentMap.${Environment}.CorsOrigins}
-          EOL
-          
-          # Create config.js for React app and upload to S3
-          cat > /tmp/config.js << 'EOL'
-          window.APP_CONFIG = {
-            apiUrl: "${ApiUrl}",
-            allowedOrigins: "${EnvironmentMap.${Environment}.CorsOrigins}",
-            environment: "${Environment}",
-            endpoints: {
-              login: "/api/login",
-              logout: "/api/logout",
-              verify: "/api/verify",
-              challenge: "/api/challenge"
-            }
-          };
-          EOL
-          
-          # Upload config.js to React app bucket
-          aws s3 cp /tmp/config.js s3://${ReactBucketName}-${Environment}/config.js
-          
-          # Clone Next.js app from repository or download from S3 bucket
-          # This is a placeholder - you'll need to add code to get your Next.js app
-          # from your source control or S3 bucket
-          
-          # Set up systemd service
-          cat > /etc/systemd/system/auth-service.service << 'EOL'
-          [Unit]
-          Description=Next.js Authentication Service
-          After=network.target
-          
-          [Service]
-          WorkingDirectory=/opt/auth-service
-          ExecStart=/usr/bin/npm run start
-          Restart=always
-          User=nobody
-          Group=nobody
-          Environment=NODE_ENV=production
-          
-          [Install]
-          WantedBy=multi-user.target
-          EOL
-          
-          # Start the service
-          systemctl enable auth-service
-          systemctl start auth-service
+        Fn::Base64:
+          !Sub
+            - |
+              #!/bin/bash -xe
+              
+              yum update -y
+              
+              curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+              yum install -y nodejs
+
+              npm install -g yarn next
+              
+              aws s3 cp s3://${NextArtifactBucketName}/next-app.zip /tmp/
+              unzip /tmp/next-app.zip -d /opt/auth-service/
+              chmod -R 755 /opt/auth-service/
+              
+              mkdir -p /opt/auth-service/server/data
+              
+              touch /opt/auth-service/server/data/sessions.db
+              chmod 700 /opt/auth-service/server/data
+              chmod 600 /opt/auth-service/server/data/sessions.db
+              
+              cat > /opt/auth-service/.env << 'EOL'
+              ENVIRONMENT=${Environment}
+              AWS_REGION=${AWS::Region}
+              COGNITO_USER_POOL_ID=${CognitoUserPoolId}
+              COGNITO_CLIENT_ID=${CognitoClientId}
+              COGNITO_CLIENT_SECRET_NAME=${CognitoClientSecretName}
+              ALLOWED_ORIGINS=${CorsOrigins}
+              EOL
+              
+              cat > /tmp/config.js << 'EOL'
+              window.APP_CONFIG = {
+                apiUrl: "${ApiUrl}",
+                allowedOrigins: "${CorsOrigins}",
+                environment: "${Environment}",
+                endpoints: {
+                  login: "/api/login",
+                  logout: "/api/logout",
+                  verify: "/api/verify",
+                  challenge: "/api/challenge"
+                }
+              };
+              EOL
+              
+              aws s3 cp /tmp/config.js s3://${ReactBucketName}-${Environment}/config.js
+              
+              cat > /etc/systemd/system/auth-service.service << 'EOL'
+              [Unit]
+              Description=Next.js Authentication Service
+              After=network.target
+              
+              [Service]
+              WorkingDirectory=/opt/auth-service
+              ExecStart=/usr/bin/npm run start
+              Restart=always
+              User=nobody
+              Group=nobody
+              Environment=NODE_ENV=production
+              
+              [Install]
+              WantedBy=multi-user.target
+              EOL
+              
+              systemctl enable auth-service
+              systemctl start auth-service
+            - CorsOrigins: !FindInMap [EnvironmentMap, !Ref Environment, CorsOrigins]
 
 Outputs:
   ReactAppBucketURL:
