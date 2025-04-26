@@ -50,7 +50,7 @@ Parameters:
     
   LatestAmazonLinuxAmi:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
-    Default: /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
     Description: Latest Amazon Linux AMI from SSM Parameter Store
 
 Mappings:
@@ -280,7 +280,7 @@ Resources:
               
               yum update -y
               
-              curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+              curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
               yum install -y nodejs
 
               npm install -g yarn next
@@ -303,6 +303,16 @@ Resources:
               COGNITO_CLIENT_SECRET_NAME=${CognitoClientSecretName}
               ALLOWED_ORIGINS=${CorsOrigins}
               EOL
+
+              cd /opt/auth-service/server
+
+              sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
+              sudo chmod 600 /swapfile
+              sudo mkswap /swapfile
+              sudo swapon /swapfile
+              
+              npm install --production
+              npm run build
               
               cat > /tmp/config.js << 'EOL'
               window.APP_CONFIG = {
