@@ -291,9 +291,9 @@ Resources:
               
               mkdir -p /opt/auth-service/server/data
               
-              touch /opt/auth-service/server/data/sessions.db
-              chmod 700 /opt/auth-service/server/data
-              chmod 600 /opt/auth-service/server/data/sessions.db
+              touch /opt/auth-service/server/sessions.db
+              chmod 700 /opt/auth-service/data
+              chmod 600 /opt/auth-service/data/sessions.db
               
               cat > /opt/auth-service/.env << 'EOL'
               ENVIRONMENT=${Environment}
@@ -332,21 +332,27 @@ Resources:
               
               cat > /etc/systemd/system/auth-service.service << 'EOL'
               [Unit]
-              Description=Next.js Authentication Service
+              Description=Next.js Authentication API Server
               After=network.target
-              
+
               [Service]
-              WorkingDirectory=/opt/auth-service
-              ExecStart=/usr/bin/npm run start
-              Restart=always
-              User=nobody
-              Group=nobody
+              Type=simple
+              User=ec2-user
+              WorkingDirectory=/opt/auth-service/standalone
+              ExecStart=/usr/bin/node server.js
+              Restart=on-failure
+              RestartSec=10
+              StandardOutput=journal
+              StandardError=journal
+              SyslogIdentifier=nextjs-auth
+              Environment=PORT=3001
               Environment=NODE_ENV=production
-              
+
               [Install]
               WantedBy=multi-user.target
               EOL
               
+              systemctl daemon-reload
               systemctl enable auth-service
               systemctl start auth-service
             - CorsOrigins: !FindInMap [EnvironmentMap, !Ref Environment, CorsOrigins]
