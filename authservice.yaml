@@ -52,6 +52,11 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
     Description: Latest Amazon Linux AMI from SSM Parameter Store
+    
+  CertificateArn:
+    Type: String
+    Description: ARN of the ACM certificate for the domain
+    Default: "arn:aws:acm:us-east-1:138689217417:certificate/076f3740-bd2f-4a18-9789-7230a6f9e6dc"
 
 Mappings:
   EnvironmentMap:
@@ -61,6 +66,9 @@ Mappings:
       CorsOrigins: "https://qa.auth.jsachs.studio"
     prod:
       CorsOrigins: "https://auth.jsachs.studio"
+
+Conditions:
+  HasCertificate: !Not [!Equals [!Ref CertificateArn, ""]]
 
 Resources:
   AuthServiceVPC:
@@ -159,13 +167,28 @@ Resources:
         Enabled: true
         DefaultRootObject: index.html
         PriceClass: PriceClass_100
-        ViewerCertificate:
-          CloudFrontDefaultCertificate: true
+        Aliases:
+          - !Ref DomainName
+        ViewerCertificate: !If
+          - HasCertificate
+          - AcmCertificateArn: !Ref CertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
         Origins:
           - Id: S3Origin
             DomainName: !GetAtt ReactAppBucket.DomainName
             S3OriginConfig:
               OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}"
+          - Id: ApiOrigin
+            DomainName: !GetAtt NextServerInstance.PublicDnsName
+            CustomOriginConfig:
+              HTTPPort: 3001
+              HTTPSPort: 443
+              OriginProtocolPolicy: http-only
+              OriginSSLProtocols: [TLSv1.2]
+              OriginKeepaliveTimeout: 5
+              OriginReadTimeout: 30
         DefaultCacheBehavior:
           TargetOriginId: S3Origin
           ViewerProtocolPolicy: redirect-to-https
@@ -178,6 +201,27 @@ Resources:
           MinTTL: 0
           DefaultTTL: 86400
           MaxTTL: 31536000
+        CacheBehaviors:
+          - PathPattern: "/api/*"
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
+            CachedMethods: [GET, HEAD]
+            ForwardedValues:
+              QueryString: true
+              Headers: 
+                - "Accept"
+                - "Authorization"
+                - "Content-Type"
+                - "Origin"
+                - "Referer"
+                - "X-CSRF-Token"
+              Cookies:
+                Forward: all
+            Compress: true
+            MinTTL: 0
+            DefaultTTL: 0
+            MaxTTL: 0
         CustomErrorResponses:
           - ErrorCode: 403
             ResponseCode: 200
@@ -291,7 +335,7 @@ Resources:
               
               mkdir -p /opt/auth-service/server/data
               
-              touch /opt/auth-service/server/sessions.db
+              touch /opt/auth-service/data/sessions.db
               chmod 700 /opt/auth-service/data
               chmod 600 /opt/auth-service/data/sessions.db
               
@@ -304,7 +348,7 @@ Resources:
               ALLOWED_ORIGINS=${CorsOrigins}
               EOL
 
-              cd /opt/auth-service/server
+              cd /opt/auth-service
 
               sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
               sudo chmod 600 /swapfile
@@ -330,7 +374,7 @@ Resources:
               
               aws s3 cp /tmp/config.js s3://${ReactBucketName}-${Environment}/config.js
               
-              cat > /etc/systemd/system/auth-service.service << 'EOL'
+              cat > /tmp/auth-service.service << 'EOL'
               [Unit]
               Description=Next.js Authentication API Server
               After=network.target
@@ -352,24 +396,39 @@ Resources:
               WantedBy=multi-user.target
               EOL
               
+              mv /tmp/auth-service.service /etc/systemd/system/auth-service.service
+
               systemctl daemon-reload
               systemctl enable auth-service
               systemctl start auth-service
             - CorsOrigins: !FindInMap [EnvironmentMap, !Ref Environment, CorsOrigins]
+
+  # We've replaced API Gateway with CloudFront path-based routing
+  # This allows us to use a single certificate in us-east-1 for both static content and API
 
 Outputs:
   ReactAppBucketURL:
     Value: !GetAtt ReactAppBucket.WebsiteURL
     Description: S3 website URL for the React app (dev only)
     
-  ReactAppCloudFrontURL:
+  CloudFrontDistributionURL:
     Value: !Sub "https://${ReactCloudFrontDistribution.DomainName}"
-    Description: CloudFront distribution URL for secure React app access
+    Description: CloudFront distribution URL for secure access
+    
+  CustomDomainURL:
+    Value: !Sub "https://${DomainName}"
+    Description: Custom domain URL for the application
+    Condition: HasCertificate
+    
+  ApiEndpoint:
+    Value: !Sub "https://${DomainName}/api"
+    Description: API endpoint via CloudFront
+    Condition: HasCertificate
     
   NextServerPublicDNS:
     Value: !GetAtt NextServerInstance.PublicDnsName
     Description: Public DNS name of the Next.js server
     
-  NextServerApiEndpoint:
+  DirectApiEndpoint:
     Value: !Sub "http://${NextServerInstance.PublicDnsName}:3001"
-    Description: API endpoint for the Next.js authentication server
+    Description: Direct API endpoint for the Next.js authentication server (for testing only)
