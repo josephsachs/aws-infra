@@ -24,7 +24,8 @@ Resources:
       UserName: !Ref DeveloperUsername
       Path: /
       ManagedPolicyArns:
-        - !Ref DevUserPolicy
+        - !Ref DevUserSecretsPolicy
+        - !Ref DevUserUserPoolAppClientAdminAuth
       Tags:
         - Key: Purpose
           Value: LocalDevelopment
@@ -74,7 +75,7 @@ Resources:
               - 'cognito-idp:ListGroups'
               - 'cognito-idp:DescribeUserPool'
               - 'cognito-idp:DescribeUserPoolClient'
-              - cognito-idp:ListUserPoolClients'
+              - 'cognito-idp:ListUserPoolClients'
             Resource: !Sub 'arn:aws:cognito-idp:*:*:userpool/*'
           - Effect: Allow
             Action:
@@ -82,12 +83,12 @@ Resources:
               - 'cognito-identity:GetIdentityPoolRoles'
               - 'cognito-identity:GetId'
               - 'cognito-identity:GetCredentialsForIdentity'
-            Resource: !Sub 'arn:aws:cognito-identity:*:*:identitypool/*''
+            Resource: !Sub 'arn:aws:cognito-identity:*:*:identitypool/*'
           - Effect: Allow
             Action:
               - 'cognito-idp:DescribeUserPoolDomain'
               - 'cognito-idp:DescribeResourceServer'
-            Resource: !Sub '*'
+            Resource: '*'
           - Effect: Allow
             Action: 
               - 'iam:PassRole'
