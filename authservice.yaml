@@ -148,9 +148,7 @@ Resources:
     Type: AWS::S3::Bucket
     Properties:
       BucketName: !Sub ${ReactBucketName}-${Environment}
-      WebsiteConfiguration:
-        IndexDocument: index.html
-        ErrorDocument: index.html
+      # Removed WebsiteConfiguration section
       CorsConfiguration:
         CorsRules:
           - AllowedHeaders: ['*']
@@ -174,8 +172,12 @@ Resources:
           - Effect: Allow
             Principal:
               CanonicalUser: !GetAtt CloudFrontOriginAccessIdentity.S3CanonicalUserId
-            Action: 's3:GetObject'
-            Resource: !Sub "${ReactAppBucket.Arn}/*"
+            Action: 
+              - 's3:GetObject'
+              - 's3:ListBucket'
+            Resource: 
+              - !Sub "${ReactAppBucket.Arn}/*"
+              - !Sub "${ReactAppBucket.Arn}"
   
   LoadBalancerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -437,7 +439,7 @@ Resources:
           DefaultTTL: 86400
           MaxTTL: 31536000
         CacheBehaviors:
-          - PathPattern: "/*"
+          - PathPattern: "/api/*"
             TargetOriginId: ApiOrigin
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
