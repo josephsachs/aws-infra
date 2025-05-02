@@ -4,7 +4,7 @@ Description: 'Authentication Service'
 Parameters:
   Environment:
     Type: String
-    Default: dev
+    Default: prod
     AllowedValues: [dev, qa, prod]
     Description: Deployment environment
     
@@ -13,7 +13,7 @@ Parameters:
     Description: Name of S3 bucket to host React application
     Default: "authservice-app-bucket"
     
-  NextArtifactBucketName:
+  ExpressArtifactBucketName:
     Type: String
     Description: Name of S3 bucket for Next.js artifacts
     Default: "authservice-artifact-bucket"
@@ -81,7 +81,7 @@ Resources:
         - Key: Name
           Value: !Sub ${AWS::StackName}-VPC
 
-  PublicSubnet:
+  PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref AuthServiceVPC
@@ -90,7 +90,18 @@ Resources:
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
-          Value: !Sub ${AWS::StackName}-PublicSubnet
+          Value: !Sub ${AWS::StackName}-PublicSubnet1
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref AuthServiceVPC
+      CidrBlock: 10.0.2.0/24
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-PublicSubnet2
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -121,10 +132,16 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  SubnetRouteTableAssociation:
+  Subnet1RouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet
+      SubnetId: !Ref PublicSubnet1
+      RouteTableId: !Ref RouteTable
+
+  Subnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet2
       RouteTableId: !Ref RouteTable
 
   ReactAppBucket:
@@ -160,6 +177,224 @@ Resources:
             Action: 's3:GetObject'
             Resource: !Sub "${ReactAppBucket.Arn}/*"
   
+  LoadBalancerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for API service load balancer
+      VpcId: !Ref AuthServiceVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ApiServerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for API service instances
+      VpcId: !Ref AuthServiceVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3001
+          ToPort: 3001
+          SourceSecurityGroupId: !Ref LoadBalancerSecurityGroup
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  ApiLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub ${AWS::StackName}-alb
+      Scheme: internet-facing
+      Subnets:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-ALB
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub ${AWS::StackName}-tg
+      Port: 3001
+      Protocol: HTTP
+      TargetType: instance
+      VpcId: !Ref AuthServiceVPC
+      HealthCheckPath: /health
+      HealthCheckPort: 3001
+      HealthCheckProtocol: HTTP
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 3
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-TargetGroup
+
+  ApiListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+      LoadBalancerArn: !Ref ApiLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  ApiLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub ${AWS::StackName}-lt
+      VersionDescription: Initial version
+      LaunchTemplateData:
+        ImageId: !Ref LatestAmazonLinuxAmi
+        InstanceType: !Ref InstanceType
+        SecurityGroupIds:
+          - !Ref ApiServerSecurityGroup
+        IamInstanceProfile:
+          Name: !Ref ApiServerInstanceProfile
+        UserData:
+          Fn::Base64:
+            !Sub
+              - |
+                #!/bin/bash -xe
+                
+                # Add debugging information to track progress
+                exec > >(tee /var/log/user-data.log|logger -t user-data -s 2>/dev/console) 2>&1
+                echo "Starting user data script execution"
+                
+                # Set up swap space early to prevent memory issues
+                echo "Setting up swap space"
+                dd if=/dev/zero of=/swapfile bs=1M count=2048
+                chmod 600 /swapfile
+                mkswap /swapfile
+                swapon /swapfile
+                echo "/swapfile swap swap defaults 0 0" >> /etc/fstab
+                
+                echo "Updating system packages"
+                yum update -y
+                
+                echo "Installing Node.js"
+                curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
+                yum install -y nodejs unzip awscli
+                
+                echo "Creating application directory"
+                mkdir -p /opt/auth-service
+                
+                echo "Downloading application package"
+                aws s3 cp s3://${ExpressArtifactBucketName}/auth-service.zip /tmp/auth-service.zip
+                
+                if [ ! -f /tmp/auth-service.zip ]; then
+                  echo "ERROR: Failed to download application package"
+                  exit 1
+                fi
+                
+                echo "Extracting application package"
+                unzip -o /tmp/auth-service.zip -d /opt/auth-service/
+                
+                echo "Setting up data directory"
+                mkdir -p /opt/auth-service/data
+                touch /opt/auth-service/data/sessions.db
+                
+                echo "Setting permissions"
+                chown -R ec2-user:ec2-user /opt/auth-service
+                chmod 755 /opt/auth-service/data
+                chmod 644 /opt/auth-service/data/sessions.db
+                
+                echo "Installing dependencies with native rebuild"
+                cd /opt/auth-service
+                
+                # Install build tools needed for native modules
+                yum install -y gcc gcc-c++ make python3
+                
+                # Clean and reinstall dependencies to ensure native modules are built correctly
+                rm -rf node_modules
+                npm install --production
+                
+                echo "Creating environment configuration"
+                cat > /opt/auth-service/.env << 'EOL'
+                ENVIRONMENT=${Environment}
+                AWS_REGION=${AWS::Region}
+                COGNITO_USER_POOL_ID=${CognitoUserPoolId}
+                COGNITO_CLIENT_ID=${CognitoClientId}
+                COGNITO_CLIENT_SECRET_NAME=${CognitoClientSecretName}
+                ALLOWED_ORIGINS=${CorsOrigins}
+                EOL
+                
+                echo "Creating systemd service"
+                cat > /etc/systemd/system/auth-service.service << 'EOL'
+                [Unit]
+                Description=Express Authentication API Server
+                After=network.target
+
+                [Service]
+                Type=simple
+                User=ec2-user
+                WorkingDirectory=/opt/auth-service
+                ExecStart=/usr/bin/node dist/server.js
+                Restart=on-failure
+                RestartSec=10
+                StandardOutput=journal
+                StandardError=journal
+                SyslogIdentifier=express-auth
+                Environment=PORT=3001
+                Environment=NODE_ENV=production
+
+                [Install]
+                WantedBy=multi-user.target
+                EOL
+                
+                echo "Starting service"
+                systemctl daemon-reload
+                systemctl enable auth-service
+                systemctl start auth-service
+                
+                echo "User data script completed"
+              - CorsOrigins: !FindInMap [EnvironmentMap, !Ref Environment, CorsOrigins]
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub ${AWS::StackName}-api-server
+              - Key: Environment
+                Value: !Ref Environment
+
+  ApiAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub ${AWS::StackName}-asg
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ApiLaunchTemplate
+        Version: !GetAtt ApiLaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 1
+      DesiredCapacity: 1
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet1
+        - !Ref PublicSubnet2
+      TargetGroupARNs:
+        - !Ref ApiTargetGroup
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: !Sub ${AWS::StackName}-api-server
+          PropagateAtLaunch: true
+        - Key: Environment
+          Value: !Ref Environment
+          PropagateAtLaunch: true
+
   ReactCloudFrontDistribution:
     Type: AWS::CloudFront::Distribution
     Properties:
@@ -181,9 +416,9 @@ Resources:
             S3OriginConfig:
               OriginAccessIdentity: !Sub "origin-access-identity/cloudfront/${CloudFrontOriginAccessIdentity}"
           - Id: ApiOrigin
-            DomainName: !GetAtt NextServerInstance.PublicDnsName
+            DomainName: !GetAtt ApiLoadBalancer.DNSName
             CustomOriginConfig:
-              HTTPPort: 3001
+              HTTPPort: 80
               HTTPSPort: 443
               OriginProtocolPolicy: http-only
               OriginSSLProtocols: [TLSv1.2]
@@ -202,7 +437,7 @@ Resources:
           DefaultTTL: 86400
           MaxTTL: 31536000
         CacheBehaviors:
-          - PathPattern: "/api/*"
+          - PathPattern: "/*"
             TargetOriginId: ApiOrigin
             ViewerProtocolPolicy: redirect-to-https
             AllowedMethods: [DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT]
@@ -229,15 +464,8 @@ Resources:
           - ErrorCode: 404
             ResponseCode: 200
             ResponsePagePath: /index.html
-    
-  #NextArtifactBucket:
-  #  Type: AWS::S3::Bucket
-  #  Properties:
-  #    BucketName: !Sub ${NextArtifactBucketName}-${Environment}
-  #    VersioningConfiguration:
-  #      Status: Enabled
   
-  NextServerRole:
+  ApiServerRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -251,10 +479,10 @@ Resources:
         - 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore'
       Path: /
   
-  NextServerPolicy:
+  ApiServerPolicy:
     Type: AWS::IAM::Policy
     Properties:
-      PolicyName: !Sub ${AWS::StackName}-NextServerPolicy
+      PolicyName: !Sub ${AWS::StackName}-ApiServerPolicy
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -263,15 +491,8 @@ Resources:
               - 's3:GetObject'
               - 's3:ListBucket'
             Resource:
-              - !Sub arn:aws:s3:::${NextArtifactBucketName}   ##-${Environment}
-              - !Sub arn:aws:s3:::${NextArtifactBucketName}/* ##-${Environment}/*
-          
-          - Effect: Allow
-            Action:
-              - 's3:PutObject'
-              - 's3:GetObject'
-            Resource:
-              - !Sub arn:aws:s3:::${ReactBucketName}-${Environment}/config.js
+              - !Sub arn:aws:s3:::${ExpressArtifactBucketName}
+              - !Sub arn:aws:s3:::${ExpressArtifactBucketName}/*
           
           - Effect: Allow
             Action:
@@ -279,132 +500,14 @@ Resources:
             Resource: 
               - !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:${CognitoClientSecretName}*
       Roles:
-        - !Ref NextServerRole
+        - !Ref ApiServerRole
   
-  NextServerInstanceProfile:
+  ApiServerInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Path: /
       Roles:
-        - !Ref NextServerRole
-  
-  NextServerSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Security group for Next.js authentication server
-      VpcId: !Ref AuthServiceVPC
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 3001
-          ToPort: 3001
-          CidrIp: 0.0.0.0/0
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-  
-  NextServerInstance:
-    Type: AWS::EC2::Instance
-    Properties:
-      InstanceType: !Ref InstanceType
-      ImageId: !Ref LatestAmazonLinuxAmi
-      SubnetId: !Ref PublicSubnet
-      IamInstanceProfile: !Ref NextServerInstanceProfile
-      SecurityGroupIds:
-        - !Ref NextServerSecurityGroup
-      Tags:
-        - Key: Name
-          Value: !Sub ${AWS::StackName}-NextServer
-        - Key: Environment
-          Value: !Ref Environment
-      UserData:
-        Fn::Base64:
-          !Sub
-            - |
-              #!/bin/bash -xe
-              
-              yum update -y
-              
-              curl -fsSL https://rpm.nodesource.com/setup_18.x | bash -
-              yum install -y nodejs
-
-              npm install -g yarn next
-              
-              aws s3 cp s3://${NextArtifactBucketName}/next-app.zip /tmp/
-              unzip /tmp/next-app.zip -d /opt/auth-service/
-              chmod -R 755 /opt/auth-service/
-              
-              mkdir -p /opt/auth-service/server/data
-              
-              touch /opt/auth-service/data/sessions.db
-              chmod 700 /opt/auth-service/data
-              chmod 600 /opt/auth-service/data/sessions.db
-              
-              cat > /opt/auth-service/.env << 'EOL'
-              ENVIRONMENT=${Environment}
-              AWS_REGION=${AWS::Region}
-              COGNITO_USER_POOL_ID=${CognitoUserPoolId}
-              COGNITO_CLIENT_ID=${CognitoClientId}
-              COGNITO_CLIENT_SECRET_NAME=${CognitoClientSecretName}
-              ALLOWED_ORIGINS=${CorsOrigins}
-              EOL
-
-              cd /opt/auth-service
-
-              sudo dd if=/dev/zero of=/swapfile bs=1M count=2048
-              sudo chmod 600 /swapfile
-              sudo mkswap /swapfile
-              sudo swapon /swapfile
-              
-              npm install --production
-              npm run build
-              
-              cat > /tmp/config.js << 'EOL'
-              window.APP_CONFIG = {
-                apiUrl: "${ApiUrl}",
-                allowedOrigins: "${CorsOrigins}",
-                environment: "${Environment}",
-                endpoints: {
-                  login: "/api/login",
-                  logout: "/api/logout",
-                  verify: "/api/verify",
-                  challenge: "/api/challenge"
-                }
-              };
-              EOL
-              
-              aws s3 cp /tmp/config.js s3://${ReactBucketName}-${Environment}/config.js
-              
-              cat > /tmp/auth-service.service << 'EOL'
-              [Unit]
-              Description=Next.js Authentication API Server
-              After=network.target
-
-              [Service]
-              Type=simple
-              User=ec2-user
-              WorkingDirectory=/opt/auth-service/standalone
-              ExecStart=/usr/bin/node server.js
-              Restart=on-failure
-              RestartSec=10
-              StandardOutput=journal
-              StandardError=journal
-              SyslogIdentifier=nextjs-auth
-              Environment=PORT=3001
-              Environment=NODE_ENV=production
-
-              [Install]
-              WantedBy=multi-user.target
-              EOL
-              
-              mv /tmp/auth-service.service /etc/systemd/system/auth-service.service
-
-              systemctl daemon-reload
-              systemctl enable auth-service
-              systemctl start auth-service
-            - CorsOrigins: !FindInMap [EnvironmentMap, !Ref Environment, CorsOrigins]
-
-  # We've replaced API Gateway with CloudFront path-based routing
-  # This allows us to use a single certificate in us-east-1 for both static content and API
+        - !Ref ApiServerRole
 
 Outputs:
   ReactAppBucketURL:
@@ -421,14 +524,14 @@ Outputs:
     Condition: HasCertificate
     
   ApiEndpoint:
-    Value: !Sub "https://${DomainName}/api"
+    Value: !Sub "https://${DomainName}"
     Description: API endpoint via CloudFront
     Condition: HasCertificate
     
-  NextServerPublicDNS:
-    Value: !GetAtt NextServerInstance.PublicDnsName
-    Description: Public DNS name of the Next.js server
+  LoadBalancerDNS:
+    Value: !GetAtt ApiLoadBalancer.DNSName
+    Description: DNS name of the Application Load Balancer
     
   DirectApiEndpoint:
-    Value: !Sub "http://${NextServerInstance.PublicDnsName}:3001"
-    Description: Direct API endpoint for the Next.js authentication server (for testing only)
+    Value: !Sub "http://${ApiLoadBalancer.DNSName}"
+    Description: Direct API endpoint for the API server (for testing only)

@@ -7,40 +7,40 @@ Parameters:
     AllowedValues: [staging, prod]
     Description: Deployment environment
 
-  UserPoolName:
-    Type: String
-    Description: Name of the Cognito User Pool
-    Default: "AuthService-UserPool"
+    UserPoolName:
+      Type: String
+      Description: Name of the Cognito User Pool
+      Default: "AuthService-UserPool"
 
-  CognitoDomainPrefix:
-    Type: String
-    Description: Prefix for the Cognito domain (e.g., yourbrand-auth)
-    Default: ""
+    CognitoDomainPrefix:
+      Type: String
+      Description: Prefix for the Cognito domain (e.g., yourbrand-auth)
+      Default: ""
 
-  EmailVerificationMessage:
-    Type: String
-    Description: Email message for verification
-    Default: "Thank you for registering. Your verification code is {####}."
+    EmailVerificationMessage:
+      Type: String
+      Description: Email message for verification
+      Default: "Thank you for registering. Your verification code is {####}."
 
-  EmailVerificationSubject:
-    Type: String
-    Description: Email subject for verification
-    Default: "Your verification code"
+    EmailVerificationSubject:
+      Type: String
+      Description: Email subject for verification
+      Default: "Your verification code"
 
-  CallbackUrls:
-    Type: String
-    Description: List of allowed callback URLs
-    Default: "http://localhost:3000/callback,https://auth.jsachs.studio:3000/callback"
+    CallbackUrls:
+      Type: String
+      Description: List of allowed callback URLs
+      Default: "http://localhost:3000/callback,https://auth.jsachs.studio:3000/callback"
 
-  LogoutUrls:
-    Type: String
-    Description: List of allowed logout URLs
-    Default: "http://localhost:3000,https://auth.jsachs.studio:3000/callback"
+    LogoutUrls:
+      Type: String
+      Description: List of allowed logout URLs
+      Default: "http://localhost:3000,https://auth.jsachs.studio:3000/callback"
 
-  ServiceName:
-    Type: String
-    Description: Name for the service (used for secret naming)
-    Default: "AuthService"
+    ServiceName:
+      Type: String
+      Description: Name for the service (used for secret naming)
+      Default: "AuthService"
 
 Conditions:
   HasExplicitDomainPrefix: !Not [!Equals [!Ref CognitoDomainPrefix, ""]]
@@ -108,6 +108,7 @@ Resources:
       ExplicitAuthFlows:
         - ALLOW_USER_SRP_AUTH
         - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
         - ALLOW_CUSTOM_AUTH
         - ALLOW_USER_PASSWORD_AUTH
       AllowedOAuthFlows:
